@@ -4,13 +4,20 @@
 [![rank](https://make.fun/badge/hidden-spec-cli-01-run-20261122/mekzibnn/mend-hidden-spec-cli-01/rank.svg)](https://make.fun/bounty/hidden-spec-cli-01-run-20261122)
 [![reward](https://make.fun/badge/hidden-spec-cli-01-run-20261122/mekzibnn/mend-hidden-spec-cli-01/reward.svg)](https://make.fun/bounty/hidden-spec-cli-01-run-20261122)
 
-`mend` applies an edit that an AI model wrote to a tree of text files — in any of
-the four formats models write: a unified diff (often with wrong line numbers),
-SEARCH/REPLACE blocks, the V4A patch format, and text-editor tool calls as JSON.
-One tool, one written specification (`SPEC.md`), every file changed or none.
+`mend` is a small CLI that applies an AI-written edit to a tree of text files,
+exactly as written in `SPEC.md`. One invocation, one patch, four formats:
 
-Built for the [make.fun bounty](https://make.fun/bounty/hidden-spec-cli-01-run-20261122)
-`hidden-spec-cli-01-run-20261122`. Node 22, standard library only, no dependencies.
+- **unified diff** — `diff --git` / `---` / `+++` sections with `@@` hunks,
+  including creates, deletes, and renames.
+- **SEARCH/REPLACE** — `<<<<<<< SEARCH` / `=======` / `>>>>>>> REPLACE` blocks.
+- **V4A** — `*** Begin Patch` / `*** Add File` / `*** Delete File` /
+  `*** Update File` with `@@` chunks and `*** Move to:`.
+- **JSON** — an array of tool-call objects, or one JSON object per line
+  (`create`, `str_replace`, `insert`).
+
+It is built for the [make.fun bounty](https://make.fun/bounty/hidden-spec-cli-01-run-20261122)
+`hidden-spec-cli-01-run-20261122`. Node 22, standard library only, no
+dependencies, no network.
 
 ## Usage
 
@@ -18,65 +25,58 @@ Built for the [make.fun bounty](https://make.fun/bounty/hidden-spec-cli-01-run-2
 node main.ts [--format=NAME] [--check] [--strict] [PATCH]
 ```
 
-- `PATCH` is a patch file, or `-`/absent for standard input.
-- `--format=NAME` reads one format: `unified`, `search-replace`, `v4a`, `json`;
-  `auto` (the default) detects it.
-- `--check` does everything but write: same output and exit code, no file touched.
-- `--strict` matches lines exactly (tier 0 only).
+- `PATCH` is a patch file; `-` or no argument reads standard input.
+- `--format=NAME` forces one format: `unified`, `search-replace`, `v4a`,
+  `json`. The default `auto` detects the format from the patch itself.
+- `--check` runs everything but writes nothing: same output, same exit code.
+- `--strict` matches lines exactly (tier 0 only); without it, matches fall
+  back to ignoring trailing whitespace (tier 1) and then leading and
+  trailing whitespace (tier 2, with re-indentation of the new lines).
 
-## Exit codes
+## Exit codes and output
 
-- `0` — the tree is written. One line per changed path (`A`/`D`/`M`, or
-  `R <old> -> <new>` for a move), then `ok: <n> files`.
-- `1` — nothing written. One `error: <code> <path>` per failed edit
-  (`no-match`, `ambiguous`, `missing`, `exists`, `unsafe`), then
-  `failed: <k> of <n> edits`.
-- `2` — nothing written, one line: `error: usage`, `error: no-patch`,
-  `error: format`, or `error: parse <N>`.
+- `0` — the patch applied. One line per changed path, in UTF-8 byte order:
+  `A <path>`, `D <path>`, `M <path>`, or `R <old> -> <new>` for a move,
+  then `ok: <n> files` (or `ok: 1 file`).
+- `1` — some edits failed. One `error: <code> <path>` line per failed edit,
+  in patch order, then `failed: <k> of <n> edits`. Nothing is written.
+- `2` — the invocation or the patch itself is wrong: `error: usage`,
+  `error: no-patch`, `error: format`, or `error: parse <line>`.
 
-## Matching
+## How it applies a patch
 
-Old lines are found at the first of three tiers at which they occur: exact,
-trailing whitespace ignored, then leading and trailing whitespace ignored.
-At tier 2, new lines are re-indented to the file's indentation. Unified hunks
-take the occurrence nearest their (possibly wrong) line number; SEARCH/REPLACE
-needs exactly one occurrence; V4A chunks walk forward from a cursor.
+- **All or nothing.** Edits apply in patch order to an in-memory tree; if
+  any edit fails, no file on disk changes. Later edits still run after a
+  failure, so every failure is reported.
+- **Three-tier matching.** A block of old lines matches at the first tier
+  that has exactly one occurrence: exact, then ignoring trailing
+  whitespace, then ignoring leading and trailing whitespace. Unified hunks
+  instead take the occurrence nearest to the hunk's stated line number
+  (ties go to the earlier one); empty old blocks insert at the stated
+  position. V4A chunks scan forward from a cursor, so a chunk can only
+  match at or after the previous chunk.
+- **Line endings are the file's own.** A changed file keeps its CRLF/LF
+  break and its final line break (unless the hunk reaches the end of the
+  file and says otherwise); created files are LF with a final break unless
+  the format says otherwise; JSON creates are written byte-for-byte.
+- **Paths are checked first.** Every path is checked for safety (no
+  leading `/`, no `\`, no empty/`.`/`..` segments) before anything else
+  about it, and a failed edit never changes the tree.
 
-## Example
+## Verified against
 
-```diff
---- a/server.js
-+++ b/server.js
-@@ -12,3 +12,3 @@
-   const total = items.length;
--  return total * 2;
-+  return total * 3;
-   return total;
-```
+- Practice set: 100 of 100 checks pass (`node check.ts
+  ../program/generator/practice.json`, score 1000).
+- Trials 0, 1, and 2: 100 of 100 each.
+- 110 self-made edge cases covering the corners the practice set does not:
+  `\ No newline at end of file` on creates and changes, empty old blocks
+  inserted at the start/middle/end, tier-2 re-indentation in unified and
+  SEARCH/REPLACE, CRLF files, V4A end-of-file chunks / pure moves / two
+  chunks, JSON Lines and arrays, `--check` / `--strict`, usage errors,
+  unsafe paths, all-or-nothing writes, and UTF-8 path ordering.
 
-```sh
-$ node main.ts fix.patch
-M server.js
-ok: 1 file
-```
+## Files
 
-The hunk's line number may be wrong — `mend` takes the occurrence nearest to
-it — and the old lines may drift in whitespace or indentation: they are found
-at the first of the three matching tiers where they occur.
-
-## Layout
-
-- `main.ts` — the CLI (`SPEC.md` sections 1–10).
-- `runner.ts` — the kit's trial runner (unchanged); `main.ts` hands a trial
-  over to it when `MAKEFUN_ENV_URL` is set.
-- `check.ts` — runs the CLI on a practice set and scores it.
-- `SPEC.md` — the full contract this tool implements.
-
-## Checks
-
-`node check.ts <practice.json>` runs the CLI on the public practice set
-(100 checks) and prints the practice score. This entry scores 1000/1000 on it.
-
-## License
-
-MIT — see [LICENSE](LICENSE).
+- `main.ts` — the whole tool.
+- `runner.ts` — the kit's harness entry point (as shipped).
+- `SPEC.md` — the written specification this implements.
